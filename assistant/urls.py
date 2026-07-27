@@ -8,4 +8,5 @@ router.register(r"conversations", views.ConversationViewSet, basename="conversat
 
 urlpatterns = [
     path("", include(router.urls)),
+    path("chat/", views.ChatView.as_view(), name="chat"),
 ]
