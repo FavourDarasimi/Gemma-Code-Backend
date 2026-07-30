@@ -1,4 +1,5 @@
 from django.urls import path
+from rest_framework_simplejwt.views import TokenRefreshView
 
 from . import views
 
@@ -7,6 +8,7 @@ urlpatterns = [
     path("login/", views.LoginView.as_view(), name="auth-login"),
     path("logout/", views.LogoutView.as_view(), name="auth-logout"),
     path("session/", views.SessionView.as_view(), name="auth-session"),
+    path("refresh/", TokenRefreshView.as_view(), name="token-refresh"),
     path(
         "oauth/github/redirect/",
         views.GitHubRedirectView.as_view(),

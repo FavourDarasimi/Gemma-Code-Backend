@@ -98,6 +98,8 @@ TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
+APPEND_SLASH = False
+
 STATIC_URL = "static/"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
@@ -146,6 +148,8 @@ CORS_ALLOWED_ORIGINS = os.environ.get(
     "NEXTJS_ORIGIN", "http://localhost:3000"
 ).split(",")
 CORS_ALLOW_CREDENTIALS = True
+
+FRONTEND_URL = os.environ.get("NEXTJS_ORIGIN", "http://localhost:3000").split(",")[0].rstrip("/")
 
 # OAuth credentials loaded from env vars for built-in views
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")

@@ -3,6 +3,7 @@ from urllib.parse import urlencode
 
 from django.conf import settings
 from django.contrib.auth import authenticate
+from django.shortcuts import redirect
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -121,15 +122,13 @@ class GitHubCallbackView(APIView):
         error_param = request.query_params.get("error")
 
         if error_param:
-            return Response(
-                {"error": f"OAuth authorization failed: {error_param}"},
-                status=status.HTTP_400_BAD_REQUEST,
+            return redirect(
+                f"{settings.FRONTEND_URL}/callback?error=OAuth+authorization+failed"
             )
 
         if not code:
-            return Response(
-                {"error": "Authorization code is required"},
-                status=status.HTTP_400_BAD_REQUEST,
+            return redirect(
+                f"{settings.FRONTEND_URL}/callback?error=Authorization+code+is+required"
             )
 
         callback_url = request.build_absolute_uri(
@@ -149,11 +148,8 @@ class GitHubCallbackView(APIView):
         token_data = resp.json()
 
         if "access_token" not in token_data:
-            return Response(
-                {
-                    "error": "Failed to exchange authorization code for access token"
-                },
-                status=status.HTTP_400_BAD_REQUEST,
+            return redirect(
+                f"{settings.FRONTEND_URL}/callback?error=Failed+to+exchange+authorization+code"
             )
 
         access_token = token_data["access_token"]
@@ -179,9 +175,8 @@ class GitHubCallbackView(APIView):
             email = primary.get("email")
 
         if not email:
-            return Response(
-                {"error": "Could not retrieve email from GitHub"},
-                status=status.HTTP_400_BAD_REQUEST,
+            return redirect(
+                f"{settings.FRONTEND_URL}/callback?error=Could+not+retrieve+email+from+GitHub"
             )
 
         github_uid = str(user_data["id"])
@@ -208,12 +203,9 @@ class GitHubCallbackView(APIView):
             )
 
         refresh = RefreshToken.for_user(user)
-        return Response(
-            {
-                "user": UserSerializer(user).data,
-                "access": str(refresh.access_token),
-                "refresh": str(refresh),
-            }
+        return redirect(
+            f"{settings.FRONTEND_URL}/callback?"
+            f"access={refresh.access_token}&refresh={refresh}"
         )
 
 
@@ -242,15 +234,13 @@ class GoogleCallbackView(APIView):
         error_param = request.query_params.get("error")
 
         if error_param:
-            return Response(
-                {"error": f"OAuth authorization failed: {error_param}"},
-                status=status.HTTP_400_BAD_REQUEST,
+            return redirect(
+                f"{settings.FRONTEND_URL}/callback?error=OAuth+authorization+failed"
             )
 
         if not code:
-            return Response(
-                {"error": "Authorization code is required"},
-                status=status.HTTP_400_BAD_REQUEST,
+            return redirect(
+                f"{settings.FRONTEND_URL}/callback?error=Authorization+code+is+required"
             )
 
         callback_url = request.build_absolute_uri(
@@ -271,11 +261,8 @@ class GoogleCallbackView(APIView):
         token_data = resp.json()
 
         if "access_token" not in token_data:
-            return Response(
-                {
-                    "error": "Failed to exchange authorization code for access token"
-                },
-                status=status.HTTP_400_BAD_REQUEST,
+            return redirect(
+                f"{settings.FRONTEND_URL}/callback?error=Failed+to+exchange+authorization+code"
             )
 
         access_token = token_data["access_token"]
@@ -292,9 +279,8 @@ class GoogleCallbackView(APIView):
 
         email = user_data.get("email")
         if not email:
-            return Response(
-                {"error": "Could not retrieve email from Google"},
-                status=status.HTTP_400_BAD_REQUEST,
+            return redirect(
+                f"{settings.FRONTEND_URL}/callback?error=Could+not+retrieve+email+from+Google"
             )
 
         google_uid = str(user_data.get("id") or user_data.get("sub", email))
@@ -321,10 +307,7 @@ class GoogleCallbackView(APIView):
             )
 
         refresh = RefreshToken.for_user(user)
-        return Response(
-            {
-                "user": UserSerializer(user).data,
-                "access": str(refresh.access_token),
-                "refresh": str(refresh),
-            }
+        return redirect(
+            f"{settings.FRONTEND_URL}/callback?"
+            f"access={refresh.access_token}&refresh={refresh}"
         )

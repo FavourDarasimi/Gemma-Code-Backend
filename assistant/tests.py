@@ -1,4 +1,5 @@
 import json
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.urls import reverse
@@ -34,15 +35,21 @@ class ConversationAPITests(TestCase):
         self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_unauthenticated_retrieve_returns_401(self):
-        resp = self.client.get(reverse("conversation-detail", args=[1]))
+        resp = self.client.get(
+            reverse("conversation-detail", args=["00000000-0000-0000-0000-000000000001"])
+        )
         self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_unauthenticated_patch_returns_401(self):
-        resp = self.client.patch(reverse("conversation-detail", args=[1]))
+        resp = self.client.patch(
+            reverse("conversation-detail", args=["00000000-0000-0000-0000-000000000001"])
+        )
         self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_unauthenticated_delete_returns_401(self):
-        resp = self.client.delete(reverse("conversation-detail", args=[1]))
+        resp = self.client.delete(
+            reverse("conversation-detail", args=["00000000-0000-0000-0000-000000000001"])
+        )
         self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
 
     # ── create ───────────────────────────────────────────────────
@@ -195,6 +202,13 @@ class ConversationAPITests(TestCase):
         self.assertEqual(Message.objects.count(), 0)
 
 
+CHUNKS = [
+    "I understand your request. Let me analyze the code carefully. ",
+    "Based on what you've shown me, I can suggest a structured approach ",
+    "to solve this. Would you like me to elaborate on any part?",
+]
+
+
 class ChatAPITests(TestCase):
     @classmethod
     def setUpTestData(cls):
@@ -203,6 +217,12 @@ class ChatAPITests(TestCase):
 
     def setUp(self):
         self.url = reverse("chat")
+        self.stream_patcher = patch("assistant.views.stream_reply")
+        self.mock_stream = self.stream_patcher.start()
+        self.mock_stream.return_value = iter(CHUNKS)
+
+    def tearDown(self):
+        self.stream_patcher.stop()
 
     def _auth(self, user):
         from rest_framework_simplejwt.tokens import RefreshToken
@@ -216,21 +236,12 @@ class ChatAPITests(TestCase):
     # ── unauthenticated ──────────────────────────────────────────
 
     def test_unauthenticated_returns_401(self):
-        resp = self.client.post(self.url, {"messages": [{"role": "user", "content": "hi"}]})
+        resp = self.client.post(self.url, {"message": "hi"})
         self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
 
     # ── validation ───────────────────────────────────────────────
 
-    def test_empty_messages_returns_400(self):
-        resp = self.client.post(
-            self.url,
-            {"messages": []},
-            content_type="application/json",
-            HTTP_AUTHORIZATION=self._auth(self.alice),
-        )
-        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_missing_messages_returns_400(self):
+    def test_missing_message_returns_400(self):
         resp = self.client.post(
             self.url,
             {},
@@ -239,10 +250,19 @@ class ChatAPITests(TestCase):
         )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_empty_content_returns_400(self):
+    def test_empty_message_returns_400(self):
         resp = self.client.post(
             self.url,
-            {"messages": [{"role": "user", "content": ""}]},
+            {"message": ""},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self._auth(self.alice),
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_whitespace_message_returns_400(self):
+        resp = self.client.post(
+            self.url,
+            {"message": "   "},
             content_type="application/json",
             HTTP_AUTHORIZATION=self._auth(self.alice),
         )
@@ -255,7 +275,7 @@ class ChatAPITests(TestCase):
             self.url,
             {
                 "conversation_id": None,
-                "messages": [{"role": "user", "content": "Hello, how are you?"}],
+                "message": "Hello, how are you?",
             },
             content_type="application/json",
             HTTP_AUTHORIZATION=self._auth(self.alice),
@@ -271,13 +291,17 @@ class ChatAPITests(TestCase):
         self.assertEqual(messages.filter(role="user").count(), 1)
         self.assertEqual(messages.filter(role="assistant").count(), 1)
         self.assertEqual(messages.filter(role="user").first().content, "Hello, how are you?")
+        self.assertEqual(
+            messages.filter(role="assistant").first().content,
+            "".join(CHUNKS),
+        )
 
     def test_new_conversation_title_from_first_message(self):
         resp = self.client.post(
             self.url,
             {
                 "conversation_id": None,
-                "messages": [{"role": "user", "content": "Can you help me refactor this Python function?"}],
+                "message": "Can you help me refactor this Python function?",
             },
             content_type="application/json",
             HTTP_AUTHORIZATION=self._auth(self.alice),
@@ -291,7 +315,7 @@ class ChatAPITests(TestCase):
             self.url,
             {
                 "conversation_id": None,
-                "messages": [{"role": "user", "content": "Hi"}],
+                "message": "Hi",
             },
             content_type="application/json",
             HTTP_AUTHORIZATION=self._auth(self.alice),
@@ -309,7 +333,7 @@ class ChatAPITests(TestCase):
             self.url,
             {
                 "conversation_id": conv.id,
-                "messages": [{"role": "user", "content": "Another question"}],
+                "message": "Another question",
             },
             content_type="application/json",
             HTTP_AUTHORIZATION=self._auth(self.alice),
@@ -322,6 +346,32 @@ class ChatAPITests(TestCase):
             conv.messages.filter(role="user").first().content, "Another question"
         )
 
+    # ── conversation memory ──────────────────────────────────────
+
+    def test_conversation_memory(self):
+        resp = self.client.post(
+            self.url,
+            {"conversation_id": None, "message": "First question"},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self._auth(self.alice),
+        )
+        self._consume_stream(resp)
+
+        conv = Conversation.objects.get(owner=self.alice)
+        self.assertEqual(conv.messages.count(), 2)
+
+        resp = self.client.post(
+            self.url,
+            {"conversation_id": conv.id, "message": "Second question"},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self._auth(self.alice),
+        )
+        self._consume_stream(resp)
+
+        self.assertEqual(conv.messages.count(), 4)
+        roles = list(conv.messages.values_list("role", flat=True))
+        self.assertEqual(roles, ["user", "assistant", "user", "assistant"])
+
     # ── SSE format ───────────────────────────────────────────────
 
     def test_sse_format(self):
@@ -329,15 +379,18 @@ class ChatAPITests(TestCase):
             self.url,
             {
                 "conversation_id": None,
-                "messages": [{"role": "user", "content": "Hi"}],
+                "message": "Hi",
             },
             content_type="application/json",
             HTTP_AUTHORIZATION=self._auth(self.alice),
         )
         body = self._consume_stream(resp)
         lines = [l for l in body.split("\n") if l.startswith("data: ")]
-        self.assertGreater(len(lines), 1)
-        for line in lines[:-1]:
+        self.assertGreater(len(lines), 2)
+        first = json.loads(lines[0][6:])
+        self.assertIn("conversation_id", first)
+        self.assertIsInstance(first["conversation_id"], str)
+        for line in lines[1:-1]:
             self.assertTrue(line.startswith("data: "))
             payload = json.loads(line[6:])
             self.assertIn("text", payload)
@@ -351,7 +404,7 @@ class ChatAPITests(TestCase):
             self.url,
             {
                 "conversation_id": conv.id,
-                "messages": [{"role": "user", "content": "Hello"}],
+                "message": "Hello",
             },
             content_type="application/json",
             HTTP_AUTHORIZATION=self._auth(self.alice),

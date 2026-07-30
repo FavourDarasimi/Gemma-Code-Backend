@@ -1,8 +1,8 @@
 from django.contrib import admin
-from django.urls import include, path
+from django.urls import include, re_path
 
 urlpatterns = [
-    path("admin/", admin.site.urls),
-    path("api/auth/", include("accounts.urls")),
-    path("api/", include("assistant.urls")),
+    re_path(r"^admin/", admin.site.urls),
+    re_path(r"^api/auth/", include("accounts.urls")),
+    re_path(r"^api/", include("assistant.urls")),
 ]

@@ -5,3 +5,4 @@ django-allauth>=0.54
 django-cors-headers>=4.0
 python-dotenv>=1.0
 requests>=2.31
+google-genai>=2.0
