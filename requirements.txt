@@ -7,3 +7,4 @@ python-dotenv>=1.0
 requests>=2.31
 google-genai>=2.0
 dj-database-url>=2.1
+gunicorn==26.0.0
