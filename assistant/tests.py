@@ -6,6 +6,7 @@ from django.urls import reverse
 from rest_framework import status
 
 from accounts.models import CustomUser
+from .gemma_service import ModelNotAvailableError
 from .models import Conversation, Message
 
 
@@ -410,3 +411,187 @@ class ChatAPITests(TestCase):
             HTTP_AUTHORIZATION=self._auth(self.alice),
         )
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    # ── partial replies / completion flag ────────────────────────
+
+    def test_assistant_message_starts_incomplete_and_flips_complete(self):
+        resp = self.client.post(
+            self.url,
+            {
+                "conversation_id": None,
+                "message": "Hi",
+            },
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self._auth(self.alice),
+        )
+        assistant = Message.objects.get(
+            conversation__owner=self.alice, role="assistant"
+        )
+        self.assertFalse(assistant.complete)
+
+        self._consume_stream(resp)
+
+        assistant.refresh_from_db()
+        self.assertTrue(assistant.complete)
+        self.assertEqual(assistant.content, "".join(CHUNKS))
+
+    def test_interrupted_stream_persists_partial_reply(self):
+        def interrupted():
+            yield "first half "
+            yield "second half"
+            raise ModelNotAvailableError("down")
+
+        self.mock_stream.return_value = interrupted()
+
+        resp = self.client.post(
+            self.url,
+            {
+                "conversation_id": None,
+                "message": "Hi",
+            },
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self._auth(self.alice),
+        )
+        body = self._consume_stream(resp)
+
+        self.assertIn('"error"', body)
+        self.assertIn("data: [DONE]", body)
+
+        assistant = Message.objects.get(
+            conversation__owner=self.alice, role="assistant"
+        )
+        self.assertEqual(assistant.content, "first half second half")
+        self.assertFalse(assistant.complete)
+
+
+class ContinueAPITests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.alice = CustomUser.objects.create_user("alice@test.com", "pass1234")
+        cls.bob = CustomUser.objects.create_user("bob@test.com", "pass1234")
+
+    def setUp(self):
+        self.url = reverse("chat-continue")
+        self.stream_patcher = patch("assistant.views.stream_reply")
+        self.mock_stream = self.stream_patcher.start()
+        self.mock_stream.return_value = iter(CHUNKS)
+
+    def tearDown(self):
+        self.stream_patcher.stop()
+
+    def _auth(self, user):
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        refresh = RefreshToken.for_user(user)
+        return f"Bearer {refresh.access_token}"
+
+    def _consume_stream(self, resp):
+        return b"".join(resp.streaming_content).decode()
+
+    def _conv_with_partial(self, owner, partial="partial reply "):
+        conv = Conversation.objects.create(owner=owner, title="Partial")
+        Message.objects.create(
+            conversation=conv, role="user", content="original question"
+        )
+        Message.objects.create(
+            conversation=conv,
+            role="assistant",
+            content=partial,
+            complete=False,
+        )
+        return conv
+
+    # ── guards ───────────────────────────────────────────────────
+
+    def test_unauthenticated_returns_401(self):
+        resp = self.client.post(
+            self.url,
+            {"conversation_id": None},
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_missing_conversation_id_returns_400(self):
+        resp = self.client.post(
+            self.url,
+            {},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self._auth(self.alice),
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_other_users_conversation_returns_404(self):
+        conv = self._conv_with_partial(self.bob)
+        resp = self.client.post(
+            self.url,
+            {"conversation_id": conv.id},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self._auth(self.alice),
+        )
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_complete_last_message_returns_400(self):
+        conv = self._conv_with_partial(self.alice)
+        conv.messages.filter(role="assistant").update(complete=True)
+        resp = self.client.post(
+            self.url,
+            {"conversation_id": conv.id},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self._auth(self.alice),
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_no_messages_returns_400(self):
+        conv = Conversation.objects.create(owner=self.alice, title="Empty")
+        resp = self.client.post(
+            self.url,
+            {"conversation_id": conv.id},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self._auth(self.alice),
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # ── continue ─────────────────────────────────────────────────
+
+    def test_continue_appends_and_marks_complete(self):
+        conv = self._conv_with_partial(self.alice)
+        resp = self.client.post(
+            self.url,
+            {"conversation_id": conv.id},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self._auth(self.alice),
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+        body = self._consume_stream(resp)
+        self.assertIn("data: [DONE]", body)
+
+        assistant = conv.messages.filter(role="assistant").last()
+        self.assertEqual(assistant.content, "partial reply " + "".join(CHUNKS))
+        self.assertTrue(assistant.complete)
+
+    def test_continue_appends_continue_instruction_to_prompt(self):
+        conv = self._conv_with_partial(self.alice)
+        resp = self.client.post(
+            self.url,
+            {"conversation_id": conv.id},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self._auth(self.alice),
+        )
+        self._consume_stream(resp)
+
+        prompt = self.mock_stream.call_args.args[0]
+        self.assertEqual(prompt[-1]["role"], "user")
+        self.assertIn("continue", prompt[-1]["content"].lower())
+        self.assertEqual(prompt[-2]["content"], "partial reply ")
+
+    def test_continue_does_not_create_new_messages(self):
+        conv = self._conv_with_partial(self.alice)
+        resp = self.client.post(
+            self.url,
+            {"conversation_id": conv.id},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self._auth(self.alice),
+        )
+        self._consume_stream(resp)
+        self.assertEqual(conv.messages.count(), 2)

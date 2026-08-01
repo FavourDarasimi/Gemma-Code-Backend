@@ -4,6 +4,7 @@ from . import views
 
 urlpatterns = [
     path("chat/", views.ChatView.as_view(), name="chat"),
+    path("chat/continue/", views.ChatContinueView.as_view(), name="chat-continue"),
     path("health/", views.health, name="health"),
     path(
         "conversations/",
